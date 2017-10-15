@@ -15,6 +15,8 @@ cmake --build . --config Release
 looper.exe  test.mp3
 ```
 
+![Alt text](Windows.PNG?raw=true "Windows")
+
 - On Ubuntu
 ```
 git clone https://github.com/atkawa7/looper
@@ -26,3 +28,5 @@ cmake ..
 cmake --build . --config Release
 ./looper  test.mp3
 ```
+
+![Alt text](Ubuntu.png?raw=true "Ubuntu")
