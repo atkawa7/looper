@@ -15,7 +15,7 @@ cmake --build . --config Release
 looper.exe  test.mp3
 ```
 
-![Alt text](Windows.PNG?raw=true "Windows")
+![Alt text](windows.PNG?raw=true "Windows")
 
 - On Ubuntu
 ```
