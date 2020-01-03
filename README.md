@@ -1,9 +1,11 @@
 # looper
+
 Looper - A minimalistic console music player
 
 NB: Tested on Windows and Ubuntu
 
 - On windows
+
 ```
 git clone https://github.com/atkawa7/looper
 cd looper
@@ -18,6 +20,7 @@ looper.exe  test.mp3
 ![Alt text](windows.PNG?raw=true "Windows")
 
 - On Ubuntu
+
 ```
 git clone https://github.com/atkawa7/looper
 cd looper
@@ -30,3 +33,5 @@ cmake --build . --config Release
 ```
 
 ![Alt text](Ubuntu.png?raw=true "Ubuntu")
+
+cmake -DCMAKE_TOOLCHAIN_FILE=\$(realpath ../vcpkg/scripts/buildsystems/vcpkg.cmake) -DVCPKG_TARGET_TRIPLET=x64-osx
