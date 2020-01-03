@@ -7,10 +7,10 @@ NB: Tested on Windows and Ubuntu
 ```
 git clone https://github.com/atkawa7/looper
 cd looper
-vcpkg.exe install mpg123 libvorbis opusfile opus libogg libflac
+vcpkg.exe install --triplet x86-windows-static mpg123 libvorbis opusfile opus libogg libflac fdk-aac libaiff alac
 mkdir build
 cd build
-cmake -G "Visual Studio 15 2017" -DCMAKE_TOOLCHAIN_FILE=C:\dev\vcpkg\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x86-windows -DCMAKE_BUILD_TYPE=Release ..
+cmake -G "Visual Studio 15 2017" -DCMAKE_TOOLCHAIN_FILE=C:\dev\vcpkg\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x86-windows-static -DCMAKE_BUILD_TYPE=Release ..
 cmake --build . --config Release
 looper.exe  test.mp3
 ```
