@@ -45,6 +45,11 @@
 #include <mmsystem.h>
 #include <shellapi.h>
 #endif
+
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif /* __APPLE__ */
+
 #ifdef __linux__
 #include <alsa/asoundlib.h>
 #include <sys/ioctl.h>
@@ -1105,6 +1110,11 @@ typedef struct _AudioFormat {
   }
 
 } AudioFormat;
+
+#if TARGET_OS_MAC
+
+#endif /* TARGET_OS_MAC */
+
 
 #ifdef _WIN32
 
