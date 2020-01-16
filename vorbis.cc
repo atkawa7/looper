@@ -81,31 +81,14 @@ extern "C" {
 #include <vorbis/vorbisfile.h>
 }
 
+#include <AudioToolbox/AudioToolbox.h>
 #include <aacdecoder_lib.h>
-#include <pthread.h>
-#include <vorbis/vorbisfile.h>
-#include <AudioToolbox/AudioToolbox.h>
-#include <AudioToolbox/AudioToolbox.h>
 #include <ogg/ogg.h>
+#include <pthread.h>
 #include <stdio.h>
+#include <vorbis/vorbisfile.h>
 
 namespace fs = std::filesystem;
-
-static const int kMaxNumberOfBuffers = 3;
-
-struct AQPlayerState {
-  AudioStreamBasicDescription mDataFormat;
-  AudioQueueRef mQueue;
-  AudioQueueBufferRef mBuffers[kMaxNumberOfBuffers];
-  AudioFileID mAudioFile;
-  UInt32 bufferByteSize;
-  SInt64 mCurrentPacket;
-  UInt32 mNumPacketsToRead;
-  AudioStreamPacketDescription* mPacketDescs;
-  bool mIsRunning;
-  long mBytesRead;
-  long mDuration;
-};
 
 #ifdef FALSE
 #undef FALSE
@@ -153,22 +136,173 @@ inline std::string to_string(const OV_Error& err) {
   return OV_Errors[err];
 }
 
-typedef struct {
-  AudioQueueRef mAudioQueue;
-  AudioQueueBufferRef mAudioQueueBuffers[kMaxNumberOfBuffers];
+static void outputCallback(void* aqData,
+                           AudioQueueRef inAQ,
+                           AudioQueueBufferRef pcmOut);
+
+int count = 0;
+
+class Engine {
+  static const int kMaxBufferSize = 0x50000;
+  static const int kMaxNumberOfBuffers = 3;
+  AudioQueueRef audio_queue_;
+  // AudioQueueBufferRef audio_queue_Buffers[kMaxNumberOfBuffers];
   AudioStreamPacketDescription* mPacketDescs;
   bool mIsRunning;
   OggVorbis_File mOVFile;
   vorbis_info* mInfo;
   FILE* mOggFile;
   AudioStreamBasicDescription mDescription;
-  long mBytesRead;
-} EngineState;
+  // long mBytesRead;
+
+ public:
+  Engine() {}
+  ~Engine() { this->close(); }
+
+  bool is_running() { return mIsRunning; }
+
+  bool has_stopped() { return !mIsRunning; }
+
+  long read_chunk(char* buffer,
+                  int length,
+                  int bigendianp,
+                  int word,
+                  int sgned,
+                  int* bitstream) {
+    return ov_read(&mOVFile, buffer, length, bigendianp, word, sgned,
+                   bitstream);
+  }
+
+  OSStatus stop() {
+    this->mIsRunning = false;
+    return AudioQueueStop(audio_queue_, true);
+  }
+
+  OSStatus async_stop() {
+    this->mIsRunning = false;
+    return AudioQueueStop(audio_queue_, false);
+  }
+
+  OSStatus enqueue_buffer(AudioQueueBufferRef audio_buffer) {
+    return AudioQueueEnqueueBuffer(audio_queue_, audio_buffer, 0, 0);
+  }
+
+  static char* codeToString(UInt32 code) {
+    static char str[5] = {'\0'};
+    UInt32 swapped = CFSwapInt32HostToBig(code);
+    memcpy(str, &swapped, sizeof(swapped));
+    return str;
+  }
+
+  void print_error(OSStatus error) {
+    printf("%s => %d", codeToString(error), error);
+  }
+
+  void close_files() {
+    ov_clear(&mOVFile);
+    if (mOggFile) {
+      fclose(mOggFile);
+      mOggFile = nullptr;
+    }
+  }
+
+  void close() {
+    stop();
+
+    if (audio_queue_) {
+      OSStatus err = AudioQueueDispose(audio_queue_, true);
+      audio_queue_ = nullptr;
+      if (err != noErr) {
+        print_error(err);
+      }
+    }
+    close_files();
+  }
+
+  void async_close() {
+    async_stop();
+    if (audio_queue_) {
+      OSStatus err = AudioQueueDispose(audio_queue_, false);
+      audio_queue_ = nullptr;
+      if (err != noErr) {
+        print_error(err);
+      }
+    }
+    close_files();
+  }
+
+  void play(char* location) {
+    mOggFile = fopen(location, "r");
+    if (mOggFile == nullptr) {
+      printf("Unable to open input file.\n");
+      exit(1);
+    }
+
+    int err =
+        ov_open_callbacks(mOggFile, &mOVFile, nullptr, 0, OV_CALLBACKS_NOCLOSE);
+    if (err != 0) {
+      printf("Unable to set callbacks.\n");
+      exit(1);
+    }
+
+    mInfo = ov_info(&(mOVFile), -1);
+    FillOutASBDForLPCM(mDescription, mInfo->rate, mInfo->channels, 16, 16,
+                       false, false);
+    this->prepareAudioBuffers();
+    this->playAudio();
+  }
+
+  void prepareAudioBuffers() {
+    OSStatus status = AudioQueueNewOutput(
+        &(mDescription), outputCallback, this, CFRunLoopGetCurrent(),
+        kCFRunLoopCommonModes, 0, &audio_queue_);
+
+    if (status != noErr) {
+      printf("Error AudioQueueNewOutput");
+      exit(1);
+    }
+
+    mPacketDescs = nullptr;
+
+    mIsRunning = true;
+
+    for (int i = 0; i < kMaxNumberOfBuffers; i++) {
+      AudioQueueBufferRef ref;
+      status = AudioQueueAllocateBuffer(audio_queue_, kMaxBufferSize, &ref);
+      if (status != noErr) {
+        this->close();
+        printf("Error allocating audio queue buffer %d\n", i);
+        exit(1);
+      }
+      outputCallback(this, audio_queue_, ref);
+    }
+  }
+  void playAudio() {
+    // set gain and start queue
+
+    std::cout << "Sequence \t" << ++count << std::endl;
+
+    AudioQueueSetParameter(audio_queue_, kAudioQueueParam_Volume, 1.0);
+    AudioQueueStart(audio_queue_, nullptr);
+
+    // maintain run loop
+    do {
+      CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.25, false);
+    } while (mIsRunning);
+
+    // run a bit longer to fully flush audio buffers
+    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 5, false);
+
+    async_close();
+  }
+};
 
 static void outputCallback(void* aqData,
                            AudioQueueRef inAQ,
                            AudioQueueBufferRef pcmOut) {
-  if (((EngineState*)aqData)->mIsRunning == 0)
+  Engine* player = static_cast<Engine*>(aqData);
+
+  if (player->has_stopped())
     return;
 
   long bytes_read = 0;
@@ -183,9 +317,8 @@ static void outputCallback(void* aqData,
     }
 
     char* offset = (char*)pcmOut->mAudioData + total_bytes_read;
-
-    bytes_read = ov_read(&(((EngineState*)aqData)->mOVFile), offset, buffer_size,
-                         false, 2, 1, &current_section);
+    bytes_read =
+        player->read_chunk(offset, buffer_size, false, 2, 1, &current_section);
     if (bytes_read <= 0) {
       break;
     }
@@ -201,110 +334,19 @@ static void outputCallback(void* aqData,
 
     pcmOut->mAudioDataByteSize = (UInt32)total_bytes_read;
     pcmOut->mPacketDescriptionCount = 0;
-    OSStatus status = AudioQueueEnqueueBuffer(
-        ((EngineState*)aqData)->mAudioQueue, pcmOut, 0, 0);
+    OSStatus status = player->enqueue_buffer(pcmOut);
 
     if (status != noErr) {
-      // something has gone horribly wrong, stop now
-      AudioQueueStop(((EngineState*)aqData)->mAudioQueue, true);
-      ((EngineState*)aqData)->mIsRunning = false;
+      player->stop();
       printf("Error %d AudioQueueEnqueueBuffer", status);
       exit(1);
     }
 
     if (bytes_read == 0) {
-      // we've reached EOF, let buffers drain before stopping
-      AudioQueueStop(((EngineState*)aqData)->mAudioQueue, false);
-      ((EngineState*)aqData)->mIsRunning = false;
+      player->async_stop();
     }
   }
 }
-
-int count = 0;
-
-class Engine {
-  EngineState engine_state{};
-
- public:
-  void play(char* location) {
-    engine_state.mOggFile = fopen(location, "r");
-    if (engine_state.mOggFile == NULL) {
-      printf("Unable to open input file.\n");
-      exit(1);
-    }
-    // lots of assumptions for these magic parameters ... probably need to
-    // detect/calculate these values at some point
-    int err = (ov_open_callbacks(engine_state.mOggFile, &(engine_state.mOVFile),
-                                 NULL, 0, OV_CALLBACKS_NOCLOSE));
-    if (err != 0) {
-      printf("Unable to set callbacks.\n");
-      exit(1);
-    }
-
-    engine_state.mInfo = ov_info(&(engine_state.mOVFile), -1);
-    FillOutASBDForLPCM(engine_state.mDescription, engine_state.mInfo->rate,
-                       engine_state.mInfo->channels, 16, 16, false, false);
-    this->prepareAudioBuffers();
-    this->playAudio();
-  }
-
-  void prepareAudioBuffers() {
-    OSStatus status = AudioQueueNewOutput(
-        &(engine_state.mDescription), outputCallback, &engine_state,
-        CFRunLoopGetCurrent(), kCFRunLoopCommonModes, 0,
-        &(engine_state.mAudioQueue));
-
-    if (status != noErr) {
-      printf("Error AudioQueueNewOutput");
-      exit(1);
-    }
-
-    // assume constant bit rate
-    engine_state.mPacketDescs = nullptr;
-
-    // 320kb, approx 5 seconds of stereo, 24 bit audio @ 96kHz sample rate
-    static const int maxBufferSize = 0x50000;
-
-    engine_state.mIsRunning = true;
-
-    // allocate queues and pre-fetch some data to prime the audio buffers
-    for (int i = 0; i < kMaxNumberOfBuffers; i++) {
-      status = AudioQueueAllocateBuffer(engine_state.mAudioQueue, maxBufferSize,
-                                        &(engine_state.mAudioQueueBuffers[i]));
-      if (status != noErr) {
-        AudioQueueDispose(engine_state.mAudioQueue, true);
-        engine_state.mAudioQueue = 0;
-        printf("Error allocating audio queue buffer %d\n", i);
-        exit(1);
-      }
-      outputCallback(&engine_state, engine_state.mAudioQueue,
-                     engine_state.mAudioQueueBuffers[i]);
-    }
-  }
-  void playAudio() {
-    // set gain and start queue
-
-    std::cout << "Sequence \t" << ++count << std::endl;
-
-    AudioQueueSetParameter(engine_state.mAudioQueue, kAudioQueueParam_Volume,
-                           1.0);
-    AudioQueueStart(engine_state.mAudioQueue, NULL);
-
-    // maintain run loop
-    do {
-      CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.25, false);
-    } while (engine_state.mIsRunning);
-
-    // run a bit longer to fully flush audio buffers
-    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 5, false);
-    AudioQueueDispose(engine_state.mAudioQueue, true);
-    ov_clear(&(engine_state.mOVFile));
-    if (engine_state.mOggFile) {
-      fclose(engine_state.mOggFile);
-      engine_state.mOggFile = NULL;
-    }
-  }
-};
 
 int main(int argc, char* argv[]) {
   if (argc != 2) {
@@ -314,7 +356,7 @@ int main(int argc, char* argv[]) {
 
   Engine engine;
   int i = 0;
-  while (i++ < kMaxNumberOfBuffers) {
+  while (i++ < 1) {
     engine.play(argv[1]);
   }
 
