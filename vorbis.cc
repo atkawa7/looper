@@ -82,32 +82,80 @@ extern "C" {
 }
 
 #include <aacdecoder_lib.h>
-
-// vorplay.c - by Johann `Myrkraverk' Oskarsson <johann@myrkraverk.com>
-
-// In the interest of example code, it's explicitly licensed under the
-// WTFPL, see the bottom of the file or http://www.wtfpl.net/ for details.
-
-#include <pthread.h>  // For pthread_exit().
-
+#include <pthread.h>
 #include <vorbis/vorbisfile.h>
-
 #include <AudioToolbox/AudioToolbox.h>
-
 #include <AudioToolbox/AudioToolbox.h>
 #include <ogg/ogg.h>
 #include <stdio.h>
 
 namespace fs = std::filesystem;
 
-const int kMaxNumberOfBuffers = 3;
+static const int kMaxNumberOfBuffers = 3;
+
+struct AQPlayerState {
+  AudioStreamBasicDescription mDataFormat;
+  AudioQueueRef mQueue;
+  AudioQueueBufferRef mBuffers[kMaxNumberOfBuffers];
+  AudioFileID mAudioFile;
+  UInt32 bufferByteSize;
+  SInt64 mCurrentPacket;
+  UInt32 mNumPacketsToRead;
+  AudioStreamPacketDescription* mPacketDescs;
+  bool mIsRunning;
+  long mBytesRead;
+  long mDuration;
+};
+
+#ifdef FALSE
+#undef FALSE
+#endif
+
+#ifdef EOF
+#undef EOF
+#endif
+
+enum class OV_Error {
+  FALSE = -1,
+  EOF = -2,
+  HOLE = -3,
+  READ = -128,
+  FAULT = -129,
+  IMPL = -130,
+  INVAL = -131,
+  NOTVORBIS = -132,
+  BADHEADER = -133,
+  VERSION = -134,
+  NOTAUDIO = -135,
+  BADPACKET = -136,
+  BADLINK = -137,
+  NOSEEK = -138
+};
+
+static std::unordered_map<OV_Error, std::string> OV_Errors ={
+  { OV_Error::FALSE, "The call returned a 'false' status (eg, ov_bitrate_instant can return OV_FALSE if playback is not in progress, and thus there is no instantaneous bitrate information to report."},
+  { OV_Error::EOF, "Reached end of file"},
+  { OV_Error::HOLE ,"libvorbis/libvorbisfile is alerting the application that there was an interruption in the data (one of: garbage between pages, loss of sync followed by recapture, or a corrupt page"},
+  { OV_Error::READ, "A read from media returned an error"},
+  { OV_Error::FAULT, "Internal logic fault.\nThis is likely a bug or heap / stack corruption"},
+  { OV_Error::IMPL , "The bitstream makes use of a feature not implemented in this library version."},
+  { OV_Error::INVAL , "Invalid argument value."},
+  { OV_Error::NOTVORBIS , "Bitstream is not Vorbis data"},
+  { OV_Error::BADHEADER, "Invalid Vorbis bitstream header"},
+  { OV_Error::VERSION , "Vorbis version mismatch"},
+  { OV_Error::NOTAUDIO , "Packet data submitted to vorbis_synthesis is not audio data."},
+  { OV_Error::BADPACKET, "Invalid packet submitted to vorbis_synthesis."},
+  { OV_Error::BADLINK , "Invalid stream section supplied to libvorbis/libvorbisfile, or the requested link is corrupt."},
+  { OV_Error::NOSEEK , "Bitstream is not seekable."}
+  };
+
+inline std::string to_string(const OV_Error& err) {
+  return OV_Errors[err];
+}
 
 typedef struct {
   AudioQueueRef mAudioQueue;
-  AudioQueueBufferRef
-      mAudioQueueBuffers[kMaxNumberOfBuffers];  // 3 "is typically a good
-                                                // number" according to the
-                                                // Apple docs
+  AudioQueueBufferRef mAudioQueueBuffers[kMaxNumberOfBuffers];
   AudioStreamPacketDescription* mPacketDescs;
   bool mIsRunning;
   OggVorbis_File mOVFile;
@@ -123,49 +171,38 @@ static void outputCallback(void* aqData,
   if (((EngineState*)aqData)->mIsRunning == 0)
     return;
 
-  long numBytesReadFromFile = 0;
-  long totalBytesReadFromFile = 0;  // effectively the offset into the file
+  long bytes_read = 0;
+  long total_bytes_read = 0;
+  int current_section = -1;
 
-  // deals with the current logical bitstream of the vorbis file
-  // currently unused here but probably needs to be supported at some point
-  int currentSection = -1;
-
-  // read from file into audio queue buffer
-  do {
-    numBytesReadFromFile = ov_read(
-        &(((EngineState*)aqData)->mOVFile),  // OggVorbis_File structure
-        (char*)pcmOut->mAudioData + totalBytesReadFromFile,  // output buffer
-        pcmOut->mAudioDataBytesCapacity -
-            (int)totalBytesReadFromFile,  // number of bytes to read into the
-                                          // buffer
-        false,                            // boolean to indicate bigendian-ness
-        2,  // 1 = 8bit samples, 2 = 16bit samples; 2 is typical
-        1,  // 0 for unsigned data, 1 for signed; 1 is typical
-        &currentSection);
-
-    if (numBytesReadFromFile > 0) {
-      totalBytesReadFromFile += numBytesReadFromFile;
+  for (;;) {
+    int buffer_size = pcmOut->mAudioDataBytesCapacity - total_bytes_read;
+    bool full = buffer_size < 0;
+    if (full) {
+      break;
     }
 
-  } while (totalBytesReadFromFile <= pcmOut->mAudioDataBytesCapacity &&
-           numBytesReadFromFile > 0);
+    char* offset = (char*)pcmOut->mAudioData + total_bytes_read;
 
-  if (numBytesReadFromFile <= 0) {
-    if (numBytesReadFromFile == -137) {
+    bytes_read = ov_read(&(((EngineState*)aqData)->mOVFile), offset, buffer_size,
+                         false, 2, 1, &current_section);
+    if (bytes_read <= 0) {
+      break;
+    }
+
+    total_bytes_read += bytes_read;
+  }
+
+  if (bytes_read <= 0) {
+    if (bytes_read == static_cast<long>(OV_Error::BADLINK)) {
       printf("Corrupt Bitstream; exiting");
       exit(1);
     }
 
-    // other errors don't matter, but report in case we care
-    // printf("OV_READ error %ld; continuing", numBytesReadFromFile);
-
-    pcmOut->mAudioDataByteSize = (UInt32)totalBytesReadFromFile;
+    pcmOut->mAudioDataByteSize = (UInt32)total_bytes_read;
     pcmOut->mPacketDescriptionCount = 0;
-
-    // enqueue an audio buffer after reading from disk
-    OSStatus status =
-        AudioQueueEnqueueBuffer(((EngineState*)aqData)->mAudioQueue, pcmOut, 0,
-                                0);  // always 0 for our purposes
+    OSStatus status = AudioQueueEnqueueBuffer(
+        ((EngineState*)aqData)->mAudioQueue, pcmOut, 0, 0);
 
     if (status != noErr) {
       // something has gone horribly wrong, stop now
@@ -175,7 +212,7 @@ static void outputCallback(void* aqData,
       exit(1);
     }
 
-    if (numBytesReadFromFile == 0) {
+    if (bytes_read == 0) {
       // we've reached EOF, let buffers drain before stopping
       AudioQueueStop(((EngineState*)aqData)->mAudioQueue, false);
       ((EngineState*)aqData)->mIsRunning = false;
