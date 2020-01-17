@@ -247,7 +247,7 @@ class Engine {
     OV_Error err =
         static_cast<OV_Error>(ov_open_callbacks(mOggFile, &mOVFile, nullptr, 0, OV_CALLBACKS_NOCLOSE));
     if (err != OV_Error::NO) {
-      printf("Unable to set callbacks.");
+      printf("Unable to set callbacks. ");
       print_error(err);
       exit(1);
     }
