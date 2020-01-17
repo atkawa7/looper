@@ -132,7 +132,6 @@ enum class OV_Error {
   { OV_Error::NOSEEK , "Bitstream is not seekable."}
   };
 
-
 inline std::string to_string(const OV_Error& err) {
   return OV_Errors[err];
 }
@@ -141,7 +140,17 @@ static void outputCallback(void* data,
                            AudioQueueRef audio_queue,
                            AudioQueueBufferRef audio_buffer);
 
-int count = 0;
+static char* codeToString(UInt32 code) {
+    static char str[5] = {'\0'};
+    UInt32 swapped = CFSwapInt32HostToBig(code);
+    memcpy(str, &swapped, sizeof(swapped));
+    return str;
+  }
+
+  void print_error(OSStatus error) {
+    printf("%s => %d", codeToString(error), error);
+  }
+
 
 class Engine {
   static const int kMaxBufferSize = 0x50000;
@@ -188,17 +197,7 @@ class Engine {
     return AudioQueueEnqueueBuffer(audio_queue_, audio_buffer, 0, 0);
   }
 
-  static char* codeToString(UInt32 code) {
-    static char str[5] = {'\0'};
-    UInt32 swapped = CFSwapInt32HostToBig(code);
-    memcpy(str, &swapped, sizeof(swapped));
-    return str;
-  }
-
-  void print_error(OSStatus error) {
-    printf("%s => %d", codeToString(error), error);
-  }
-
+  
   void close_files() {
     ov_clear(&mOVFile);
     if (mOggFile) {
@@ -253,6 +252,21 @@ class Engine {
     this->playAudio();
   }
 
+  void setup_buffers() {
+    OSStatus status;
+    for (int i = 0; i < kMaxNumberOfBuffers; i++) {
+      AudioQueueBufferRef ref;
+      status = AudioQueueAllocateBuffer(audio_queue_, kMaxBufferSize, &ref);
+      if (status != noErr) {
+        this->close();
+        print_error(status);
+        printf("Error allocating audio queue buffer %d\n", i);
+        exit(1);
+      }
+      outputCallback(this, audio_queue_, ref);
+    }
+  }
+
   void prepareAudioBuffers() {
     OSStatus status = AudioQueueNewOutput(
         &(mDescription), outputCallback, this, CFRunLoopGetCurrent(),
@@ -260,6 +274,7 @@ class Engine {
 
     if (status != noErr) {
       printf("Error AudioQueueNewOutput");
+       print_error(status);
       exit(1);
     }
 
@@ -267,31 +282,20 @@ class Engine {
 
     mIsRunning = true;
 
-    for (int i = 0; i < kMaxNumberOfBuffers; i++) {
-      AudioQueueBufferRef ref;
-      status = AudioQueueAllocateBuffer(audio_queue_, kMaxBufferSize, &ref);
-      if (status != noErr) {
-        this->close();
-        printf("Error allocating audio queue buffer %d\n", i);
-        exit(1);
-      }
-      outputCallback(this, audio_queue_, ref);
-    }
+    this->setup_buffers();
+
   }
-  void playAudio() {
-    // set gain and start queue
 
-    std::cout << "Sequence \t" << ++count << std::endl;
-
+  void start(){
     AudioQueueSetParameter(audio_queue_, kAudioQueueParam_Volume, 1.0);
     AudioQueueStart(audio_queue_, nullptr);
-
-    // maintain run loop
+  }
+  void playAudio() {
+    this->start();
     do {
       CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.25, false);
     } while (mIsRunning);
 
-    // run a bit longer to fully flush audio buffers
     CFRunLoopRunInMode(kCFRunLoopDefaultMode, 5, false);
 
     async_close();
@@ -339,6 +343,7 @@ static void outputCallback(void* data,
 
     if (status != noErr) {
       player->stop();
+      print_error(status);
       printf("Error %d AudioQueueEnqueueBuffer", status);
       exit(1);
     }
