@@ -99,6 +99,7 @@ namespace fs = std::filesystem;
 #endif
 
 enum class OV_Error {
+  NO = 0,
   FALSE = -1,
   EOF = -2,
   HOLE = -3,
@@ -115,7 +116,8 @@ enum class OV_Error {
   NOSEEK = -138
 };
 
- static std::unordered_map<OV_Error, std::string> OV_Errors ={
+ static std::unordered_map<OV_Error, const char*> OV_Errors ={
+  { OV_Error::NO, "No Error"},
   { OV_Error::FALSE, "The call returned a 'false' status (eg, ov_bitrate_instant can return OV_FALSE if playback is not in progress, and thus there is no instantaneous bitrate information to report."},
   { OV_Error::EOF, "Reached end of file"},
   { OV_Error::HOLE ,"libvorbis/libvorbisfile is alerting the application that there was an interruption in the data (one of: garbage between pages, loss of sync followed by recapture, or a corrupt page"},
@@ -132,7 +134,7 @@ enum class OV_Error {
   { OV_Error::NOSEEK , "Bitstream is not seekable."}
   };
 
-inline std::string to_string(const OV_Error& err) {
+inline const char* to_string(const OV_Error& err) {
   return OV_Errors[err];
 }
 
@@ -145,6 +147,10 @@ static char* codeToString(UInt32 code) {
     UInt32 swapped = CFSwapInt32HostToBig(code);
     memcpy(str, &swapped, sizeof(swapped));
     return str;
+  }
+
+  void print_error(OV_Error error) {
+    printf("%s => %d", to_string(error), error);
   }
 
   void print_error(OSStatus error) {
@@ -238,10 +244,11 @@ class Engine {
       exit(1);
     }
 
-    int err =
-        ov_open_callbacks(mOggFile, &mOVFile, nullptr, 0, OV_CALLBACKS_NOCLOSE);
-    if (err != 0) {
-      printf("Unable to set callbacks.\n");
+    OV_Error err =
+        static_cast<OV_Error>(ov_open_callbacks(mOggFile, &mOVFile, nullptr, 0, OV_CALLBACKS_NOCLOSE));
+    if (err != OV_Error::NO) {
+      printf("Unable to set callbacks.");
+      print_error(err);
       exit(1);
     }
 
