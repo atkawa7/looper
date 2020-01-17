@@ -115,7 +115,7 @@ enum class OV_Error {
   NOSEEK = -138
 };
 
-static std::unordered_map<OV_Error, std::string> OV_Errors ={
+ static std::unordered_map<OV_Error, std::string> OV_Errors ={
   { OV_Error::FALSE, "The call returned a 'false' status (eg, ov_bitrate_instant can return OV_FALSE if playback is not in progress, and thus there is no instantaneous bitrate information to report."},
   { OV_Error::EOF, "Reached end of file"},
   { OV_Error::HOLE ,"libvorbis/libvorbisfile is alerting the application that there was an interruption in the data (one of: garbage between pages, loss of sync followed by recapture, or a corrupt page"},
@@ -132,13 +132,14 @@ static std::unordered_map<OV_Error, std::string> OV_Errors ={
   { OV_Error::NOSEEK , "Bitstream is not seekable."}
   };
 
+
 inline std::string to_string(const OV_Error& err) {
   return OV_Errors[err];
 }
 
-static void outputCallback(void* aqData,
-                           AudioQueueRef inAQ,
-                           AudioQueueBufferRef pcmOut);
+static void outputCallback(void* data,
+                           AudioQueueRef audio_queue,
+                           AudioQueueBufferRef audio_buffer);
 
 int count = 0;
 
@@ -297,10 +298,10 @@ class Engine {
   }
 };
 
-static void outputCallback(void* aqData,
-                           AudioQueueRef inAQ,
-                           AudioQueueBufferRef pcmOut) {
-  Engine* player = static_cast<Engine*>(aqData);
+static void outputCallback(void* data,
+                           AudioQueueRef audio_queue,
+                           AudioQueueBufferRef audio_buffer) {
+  Engine* player = static_cast<Engine*>(data);
 
   if (player->has_stopped())
     return;
@@ -310,13 +311,13 @@ static void outputCallback(void* aqData,
   int current_section = -1;
 
   for (;;) {
-    int buffer_size = pcmOut->mAudioDataBytesCapacity - total_bytes_read;
+    int buffer_size = audio_buffer->mAudioDataBytesCapacity - total_bytes_read;
     bool full = buffer_size < 0;
     if (full) {
       break;
     }
 
-    char* offset = (char*)pcmOut->mAudioData + total_bytes_read;
+    char* offset = (char*)audio_buffer->mAudioData + total_bytes_read;
     bytes_read =
         player->read_chunk(offset, buffer_size, false, 2, 1, &current_section);
     if (bytes_read <= 0) {
@@ -332,9 +333,9 @@ static void outputCallback(void* aqData,
       exit(1);
     }
 
-    pcmOut->mAudioDataByteSize = (UInt32)total_bytes_read;
-    pcmOut->mPacketDescriptionCount = 0;
-    OSStatus status = player->enqueue_buffer(pcmOut);
+    audio_buffer->mAudioDataByteSize = (uint32_t)total_bytes_read;
+    audio_buffer->mPacketDescriptionCount = 0;
+    OSStatus status = player->enqueue_buffer(audio_buffer);
 
     if (status != noErr) {
       player->stop();
